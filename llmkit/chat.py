@@ -12,6 +12,7 @@ from tokenizers import Tokenizer
 from transformers import Qwen3Config, Qwen3ForCausalLM
 from llmkit.chat_template import EOS_TOKEN, render_conversation
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint
+from llmkit.i18n import tr
 from llmkit.model import build_qwen3_config, create_model
 from llmkit.state import load_project
 from llmkit.tools_sandbox import SANDBOX_TOOLS_SCHEMAS, execute_tool
@@ -39,7 +40,7 @@ def run_chat_repl(
 
     tok_path = project_dir / "tokenizer" / "tokenizer.json"
     if not tok_path.exists():
-        print("[ERROR] Tokenizer belum dilatih. Jalankan 'tokenizer' terlebih dahulu.")
+        print(tr("[ERROR] Tokenizer belum dilatih. Jalankan 'tokenizer' terlebih dahulu.", "[ERROR] Tokenizer not trained yet. Run 'tokenizer' first."))
         return
 
     tokenizer = Tokenizer.from_file(str(tok_path))
@@ -51,7 +52,7 @@ def run_chat_repl(
     else:
         existing_runs = sorted(list(runs_dir.glob("run_*")), key=lambda p: p.name)
         if not existing_runs:
-            print("[ERROR] Belum ada run training yang ditemukan.")
+            print(tr("[ERROR] Belum ada run training yang ditemukan.", "[ERROR] No training runs found yet."))
             return
         target_run_dir = existing_runs[-1]
 
@@ -62,7 +63,7 @@ def run_chat_repl(
         ckpt_path = find_latest_checkpoint(ckpt_dir)
 
     if not ckpt_path or not ckpt_path.exists():
-        print(f"[ERROR] Checkpoint tidak ditemukan di {ckpt_dir}.")
+        print(tr(f"[ERROR] Checkpoint tidak ditemukan di {ckpt_dir}.", f"[ERROR] Checkpoint not found in {ckpt_dir}."))
         return
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -71,8 +72,14 @@ def run_chat_repl(
     load_checkpoint(ckpt_path, model, device=device)
     model.eval()
 
-    print_info(f"Chat REPL aktif | Model: {target_run_dir.name} | Checkpoint: {ckpt_path.name}")
-    print("Ketik pesanmu. Perintah khusus: /think, /nothink, /reset, /tools on|off, /system <teks>, /exit")
+    print_info(tr(
+        f"Chat REPL aktif | Model: {target_run_dir.name} | Checkpoint: {ckpt_path.name}",
+        f"Chat REPL active | Model: {target_run_dir.name} | Checkpoint: {ckpt_path.name}"
+    ))
+    print(tr(
+        "Ketik pesanmu. Perintah khusus: /think, /nothink, /reset, /tools on|off, /system <teks>, /exit",
+        "Type your message. Special commands: /think, /nothink, /reset, /tools on|off, /system <text>, /exit"
+    ))
 
     current_mode = initial_mode
     tools_active = use_tools
@@ -85,7 +92,7 @@ def run_chat_repl(
             tool_badge = "[+tools]" if tools_active else ""
             user_input = input(f"\nUser {mode_badge}{tool_badge}> ").strip()
         except (KeyboardInterrupt, EOFError):
-            print("\nKeluar dari chat.")
+            print("\n" + tr("Keluar dari chat.", "Exiting chat."))
             break
 
         if not user_input:
@@ -93,28 +100,29 @@ def run_chat_repl(
 
         # Perintah CLI internal dalam chat
         if user_input == "/exit":
-            print("Sampai jumpa!")
+            print(tr("Sampai jumpa!", "Goodbye!"))
             break
         elif user_input == "/reset":
             history_messages.clear()
-            print_info("Riwayat percakapan dibersihkan.")
+            print_info(tr("Riwayat percakapan dibersihkan.", "Conversation history cleared."))
             continue
         elif user_input == "/think":
             current_mode = "think"
-            print_info("Mode dialihkan ke: think")
+            print_info(tr("Mode dialihkan ke: think", "Mode switched to: think"))
             continue
         elif user_input == "/nothink":
             current_mode = "no_think"
-            print_info("Mode dialihkan ke: no_think")
+            print_info(tr("Mode dialihkan ke: no_think", "Mode switched to: no_think"))
             continue
         elif user_input.startswith("/tools "):
             arg = user_input.split()[1].lower()
             tools_active = (arg == "on")
-            print_info(f"Fitur tools: {'aktif' if tools_active else 'mati'}")
+            st_str = tr('aktif' if tools_active else 'mati', 'active' if tools_active else 'inactive')
+            print_info(tr(f"Fitur tools: {st_str}", f"Tools feature: {st_str}"))
             continue
         elif user_input.startswith("/system "):
             custom_system = user_input[8:].strip()
-            print_info(f"System prompt diperbarui: {custom_system}")
+            print_info(tr(f"System prompt diperbarui: {custom_system}", f"System prompt updated: {custom_system}"))
             continue
 
         # Susun riwayat giliran
@@ -167,7 +175,8 @@ def run_chat_repl(
             if think_match:
                 reasoning_txt = think_match.group(1).strip()
                 if reasoning_txt:
-                    print(f"\n[bold cyan][Pikir][/bold cyan]\n{reasoning_txt}")
+                    pikir_tag = tr("[Pikir]", "[Think]")
+                    print(f"\n[bold cyan]{pikir_tag}[/bold cyan]\n{reasoning_txt}")
                 content_part = re.sub(r"<think>.*?</think>", "", reply, flags=re.DOTALL).strip()
 
             # Cek apakah ada panggilan tool <tool_call>

@@ -16,6 +16,7 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 from llmkit.chat_template import render_conversation
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint, save_checkpoint
 from llmkit.dataset import SFTDataset, sft_collate_fn
+from llmkit.i18n import tr
 from llmkit.model import (
     build_qwen3_config,
     create_adamw_optimizer,
@@ -159,7 +160,7 @@ def run_sft(
     if target_ckpt_path and target_ckpt_path.exists():
         load_checkpoint(target_ckpt_path, model, device=device)
         pretrain_ckpt_loaded = True
-        print(f"[OK] Bobot pretrain berhasil dimuat dari: {target_ckpt_path}")
+        print(tr(f"[OK] Bobot pretrain berhasil dimuat dari: {target_ckpt_path}", f"[OK] Pretrain weights loaded from: {target_ckpt_path}"))
     else:
         raise FileNotFoundError(
             "SFT membutuhkan checkpoint pretrain selesai (final/) atau run pretrain yang valid.\n"
@@ -170,18 +171,20 @@ def run_sft(
 
     # Cetak 3 sampel hasil render + mask (Bagian 12.3)
     print("\n" + "=" * 50)
-    print("PREVIEW FORMAT SFT (3 Sampel Render & Loss Masking):")
+    print(tr("PREVIEW FORMAT SFT (3 Sampel Render & Loss Masking):", "SFT FORMAT PREVIEW (3 Rendered Samples & Loss Masking):"))
     for s_idx, samp in enumerate(train_samples[:3], start=1):
         rendered_text, spans = render_conversation(samp)
-        print(f"\n--- Sampel #{s_idx} ({samp.get('id', '-')}, mode: {samp.get('mode', '-')}, lang: {samp.get('lang', '-')}) ---")
+        print(f"\n--- {tr('Sampel', 'Sample')} #{s_idx} ({samp.get('id', '-')}, mode: {samp.get('mode', '-')}, lang: {samp.get('lang', '-')}) ---")
         curr_pos = 0
+        input_tag = tr("[INPUT/TIDAK DILATIH]", "[INPUT/UNMASKED]")
+        asst_tag = tr("[ASSISTANT/DILATIH MASK-LOSS]", "[ASSISTANT/TRAINED LOSS MASK]")
         for start, end in spans:
             if start > curr_pos:
-                print(f"[INPUT/TIDAK DILATIH]\n{rendered_text[curr_pos:start]}", end="")
-            print(f"[ASSISTANT/DILATIH MASK-LOSS]\n{rendered_text[start:end]}\n", end="")
+                print(f"{input_tag}\n{rendered_text[curr_pos:start]}", end="")
+            print(f"{asst_tag}\n{rendered_text[start:end]}\n", end="")
             curr_pos = end
         if curr_pos < len(rendered_text):
-            print(f"[INPUT/TIDAK DILATIH]\n{rendered_text[curr_pos:]}", end="")
+            print(f"{input_tag}\n{rendered_text[curr_pos:]}", end="")
         print("-" * 40)
     print("=" * 50 + "\n")
 
@@ -196,7 +199,10 @@ def run_sft(
     run_file = curr_run_dir / "run.json"
     metrics_file = curr_run_dir / "metrics.jsonl"
 
-    print(f"\n=== MEMULAI SFT: {len(train_dataset):,} sampel latih, {len(val_dataset):,} sampel evaluasi ===")
+    print("\n" + tr(
+        f"=== MEMULAI SFT: {len(train_dataset):,} sampel latih, {len(val_dataset):,} sampel evaluasi ===",
+        f"=== STARTING SFT: {len(train_dataset):,} train samples, {len(val_dataset):,} validation samples ==="
+    ))
     print(f"Epochs: {epochs}, Max Seq Len: {max_seq_len}, LR: {lr:.2e}")
 
     step = 0
@@ -275,7 +281,7 @@ def run_sft(
                 val_tokens_sum += v_toks
 
         avg_val_loss = val_loss_sum / max(1, val_tokens_sum)
-        print(f"Epoch {epoch}/{epochs} Selesai - Val Loss: {avg_val_loss:.4f}")
+        print(tr(f"Epoch {epoch}/{epochs} Selesai - Val Loss: {avg_val_loss:.4f}", f"Epoch {epoch}/{epochs} Completed - Val Loss: {avg_val_loss:.4f}"))
 
         is_best = avg_val_loss < best_val_loss
         if is_best:

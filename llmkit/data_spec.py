@@ -171,12 +171,13 @@ def create_project_data_scaffold(project_dir: Path, plan: dict[str, Any], model_
         target_tok = needed.get(folder_name, 0.0)
         target_str = f"{target_tok / 1e9:.2f}B token" if target_tok >= 1e9 else f"{target_tok / 1e6:.1f}M token"
 
+        contoh_pretrain = info.get("contoh", '{"text": "..."}')
         content = (
             f"=== DATA PRETRAIN: {folder_name} ===\n"
             f"Deskripsi: {info.get('deskripsi', '')}\n"
             f"Target alokasi proyek: {target_str}\n"
             f"Format wajib: file .jsonl (UTF-8), satu baris satu dokumen JSON:\n"
-            f'{info.get("contoh", "{\"text\": \"...\"}")}\n\n'
+            f"{contoh_pretrain}\n\n"
             f"Field wajib: 'text' (string tidak kosong).\n"
             f"Field opsional: 'lang', 'source', 'id'.\n"
         )
@@ -376,6 +377,8 @@ def make_identity_file(
         }, ensure_ascii=False)
     ]
     auto_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"[OK] File identitas berhasil dibuat di: {auto_file}")
+    from llmkit.i18n import tr
+    from llmkit.ui import print_ok
+    print_ok(tr(f"File identitas berhasil dibuat di: {auto_file}", f"Identity file successfully created at: {auto_file}"))
     return auto_file
 

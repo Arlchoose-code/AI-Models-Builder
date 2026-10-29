@@ -13,6 +13,7 @@ from tokenizers import Tokenizer
 from transformers import Qwen3Config, Qwen3ForCausalLM
 from llmkit.chat_template import EOS_TOKEN, render_conversation
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint
+from llmkit.i18n import tr
 from llmkit.model import build_qwen3_config, create_model
 from llmkit.state import atomic_write_json, load_project
 from llmkit.tools_sandbox import SANDBOX_TOOLS_SCHEMAS, execute_tool
@@ -125,16 +126,16 @@ def evaluate_pretrain_model(
 
     atomic_write_json(run_dir / "eval.json", eval_result)
 
-    print(f"\n=== HASIL EVALUASI PRETRAIN: {run_id} ===")
+    print("\n" + tr(f"=== HASIL EVALUASI PRETRAIN: {run_id} ===", f"=== PRETRAIN EVALUATION RESULTS: {run_id} ==="))
     print(f"  Overall Val Loss: {eval_result['val_loss']}")
     print(f"  Perplexity      : {eval_result['perplexity']}")
     print(f"  Bits Per Byte   : {eval_result['bits_per_byte']}")
     if eval_result["sources"]:
-        print("\n  Loss per sumber:")
+        print("\n" + tr("  Loss per sumber:", "  Loss per source:"))
         for src, l in eval_result["sources"].items():
             print(f"    - {src}: {l:.4f}")
     if samples:
-        print("\n  Sampel Kelanjutan Teks:")
+        print("\n" + tr("  Sampel Kelanjutan Teks:", "  Text Continuation Samples:"))
         for s in samples:
             print(f"    {s.strip()}")
 
@@ -162,17 +163,17 @@ def compare_runs(project_dir: Path, run_id_1: str, run_id_2: str) -> None:
     info1 = load_run_info(r1_dir)
     info2 = load_run_info(r2_dir)
 
-    print(f"\n=== PERBANDINGAN RUN: {run_id_1} VS {run_id_2} ===")
-    headers = ["Metrik", run_id_1, run_id_2]
+    print("\n" + tr(f"=== PERBANDINGAN RUN: {run_id_1} VS {run_id_2} ===", f"=== RUN COMPARISON: {run_id_1} VS {run_id_2} ==="))
+    headers = [tr("Metrik", "Metric"), run_id_1, run_id_2]
     rows = []
 
     run1 = info1.get("run", {})
     run2 = info2.get("run", {})
-    rows.append(["Jenis Run", run1.get("kind", "-"), run2.get("kind", "-")])
-    rows.append(["Status", run1.get("status", "-"), run2.get("status", "-")])
-    rows.append(["Step", str(run1.get("step", "-")), str(run2.get("step", "-"))])
-    rows.append(["Tokens Seen", str(run1.get("tokens_seen", "-")), str(run2.get("tokens_seen", "-"))])
-    rows.append(["Loss Terakhir", str(run1.get("last_loss", "-")), str(run2.get("last_loss", "-"))])
+    rows.append([tr("Jenis Run", "Run Kind"), run1.get("kind", "-"), run2.get("kind", "-")])
+    rows.append([tr("Status", "Status"), run1.get("status", "-"), run2.get("status", "-")])
+    rows.append([tr("Step", "Step"), str(run1.get("step", "-")), str(run2.get("step", "-"))])
+    rows.append([tr("Tokens Seen", "Tokens Seen"), str(run1.get("tokens_seen", "-")), str(run2.get("tokens_seen", "-"))])
+    rows.append([tr("Loss Terakhir", "Last Loss"), str(run1.get("last_loss", "-")), str(run2.get("last_loss", "-"))])
 
     e1 = info1.get("eval", {})
     e2 = info2.get("eval", {})
@@ -184,15 +185,15 @@ def compare_runs(project_dir: Path, run_id_1: str, run_id_2: str) -> None:
         if "bits_per_byte" in e1 or "bits_per_byte" in e2:
             rows.append(["Bits Per Byte", str(e1.get("bits_per_byte", "-")), str(e2.get("bits_per_byte", "-"))])
         if "mode_compliance_pct" in e1 or "mode_compliance_pct" in e2:
-            rows.append(["Kepatuhan Mode", f"{e1.get('mode_compliance_pct', '-')}%", f"{e2.get('mode_compliance_pct', '-')}%"])
+            rows.append([tr("Kepatuhan Mode", "Mode Compliance"), f"{e1.get('mode_compliance_pct', '-')}%", f"{e2.get('mode_compliance_pct', '-')}%"])
         if "tool_decision_pct" in e1 or "tool_decision_pct" in e2:
-            rows.append(["Keputusan Tool", f"{e1.get('tool_decision_pct', '-')}%", f"{e2.get('tool_decision_pct', '-')}%"])
+            rows.append([tr("Keputusan Tool", "Tool Decision"), f"{e1.get('tool_decision_pct', '-')}%", f"{e2.get('tool_decision_pct', '-')}%"])
         if "tool_syntax_pct" in e1 or "tool_syntax_pct" in e2:
-            rows.append(["Sintaks Tool", f"{e1.get('tool_syntax_pct', '-')}%", f"{e2.get('tool_syntax_pct', '-')}%"])
+            rows.append([tr("Sintaks Tool", "Tool Syntax"), f"{e1.get('tool_syntax_pct', '-')}%", f"{e2.get('tool_syntax_pct', '-')}%"])
         if "language_match_pct" in e1 or "language_match_pct" in e2:
-            rows.append(["Kecocokan Bahasa", f"{e1.get('language_match_pct', '-')}%", f"{e2.get('language_match_pct', '-')}%"])
+            rows.append([tr("Kecocokan Bahasa", "Language Match"), f"{e1.get('language_match_pct', '-')}%", f"{e2.get('language_match_pct', '-')}%"])
         if "identity_match_pct" in e1 or "identity_match_pct" in e2:
-            rows.append(["Identitas", f"{e1.get('identity_match_pct', '-')}%", f"{e2.get('identity_match_pct', '-')}%"])
+            rows.append([tr("Identitas", "Identity"), f"{e1.get('identity_match_pct', '-')}%", f"{e2.get('identity_match_pct', '-')}%"])
 
     print_table(headers, rows)
 
@@ -411,12 +412,13 @@ def evaluate_sft_model(
 
     atomic_write_json(run_dir / "eval.json", eval_result)
 
-    print(f"\n=== HASIL EVALUASI SFT: {run_id} ===")
-    print(f"  Kepatuhan Mode Think/No-think: {eval_result['mode_compliance_pct']}%")
-    print(f"  Ketepatan Keputusan Tool     : {eval_result['tool_decision_pct']}%")
-    print(f"  Sintaks Tool Call Valid      : {eval_result['tool_syntax_pct']}%")
-    print(f"  Kecocokan Bahasa             : {eval_result['language_match_pct']}%")
-    print(f"  Pengenalan Identitas         : {eval_result['identity_match_pct']}%")
-    print(f"  Bebas Degenerasi             : {'[OK]' if eval_result['no_degeneration'] else '[WARN] Terdeteksi loop'}")
+    print("\n" + tr(f"=== HASIL EVALUASI SFT: {run_id} ===", f"=== SFT EVALUATION RESULTS: {run_id} ==="))
+    print(tr(f"  Kepatuhan Mode Think/No-think: {eval_result['mode_compliance_pct']}%", f"  Think/No-think Mode Compliance : {eval_result['mode_compliance_pct']}%"))
+    print(tr(f"  Ketepatan Keputusan Tool     : {eval_result['tool_decision_pct']}%", f"  Tool Decision Accuracy         : {eval_result['tool_decision_pct']}%"))
+    print(tr(f"  Sintaks Tool Call Valid      : {eval_result['tool_syntax_pct']}%", f"  Valid Tool Call Syntax         : {eval_result['tool_syntax_pct']}%"))
+    print(tr(f"  Kecocokan Bahasa             : {eval_result['language_match_pct']}%", f"  Language Match                 : {eval_result['language_match_pct']}%"))
+    print(tr(f"  Pengenalan Identitas         : {eval_result['identity_match_pct']}%", f"  Identity Recognition           : {eval_result['identity_match_pct']}%"))
+    degen_tag = tr('[OK]' if eval_result['no_degeneration'] else '[WARN] Terdeteksi loop', '[OK]' if eval_result['no_degeneration'] else '[WARN] Degeneration detected')
+    print(tr(f"  Bebas Degenerasi             : {degen_tag}", f"  Free of Degeneration           : {degen_tag}"))
 
     return eval_result

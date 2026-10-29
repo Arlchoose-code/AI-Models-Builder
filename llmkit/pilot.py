@@ -12,6 +12,7 @@ import torch
 import torch.nn as nn
 from llmkit.checkpoint import load_checkpoint, save_checkpoint
 from llmkit.dataset import PretrainDataLoader
+from llmkit.i18n import tr
 from llmkit.model import (
     build_qwen3_config,
     create_adamw_optimizer,
@@ -47,8 +48,8 @@ def run_pilot(
     lr_candidates = [0.5 * base_lr, 1.0 * base_lr, 2.0 * base_lr]
     sweep_results: list[dict[str, Any]] = []
 
-    print("\n=== PILOT: SWEEP LEARNING RATE ===")
-    print(f"Menjalankan model uji coba 0.05B ({p05['total']:,} params) pada data asli...")
+    print("\n" + tr("=== PILOT: SWEEP LEARNING RATE ===", "=== PILOT: LEARNING RATE SWEEP ==="))
+    print(tr(f"Menjalankan model uji coba 0.05B ({p05['total']:,} params) pada data asli...", f"Running 0.05B trial model ({p05['total']:,} params) on real data..."))
 
     best_loss = float("inf")
     best_lr = base_lr
@@ -56,7 +57,7 @@ def run_pilot(
     loss_fn = nn.CrossEntropyLoss()
 
     for idx, lr in enumerate(lr_candidates, start=1):
-        print(f"\n[Run {idx}/3] Menguji LR: {lr:.2e} ...")
+        print(tr(f"\n[Run {idx}/3] Menguji LR: {lr:.2e} ...", f"\n[Run {idx}/3] Testing LR: {lr:.2e} ..."))
         model = create_model(cfg, seed=1337 + idx).to(device)
         optimizer = create_adamw_optimizer(model, lr=lr)
         loader = PretrainDataLoader(project_dir, plan, seed=1337)
@@ -65,7 +66,7 @@ def run_pilot(
         for s in range(steps_per_sweep):
             x, y = loader.next_batch(micro_batch=2, seq_len=256, device=device)
             out = model(x)
-            loss = loss_fn(out.logits.view(-1, cfg.vocab_size), y.view(-1))
+            loss = loss_fn(out.logits.reshape(-1, cfg.vocab_size), y.reshape(-1))
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -85,7 +86,7 @@ def run_pilot(
             best_lr = lr
 
     # 2. Uji Resume
-    print("\n=== PILOT: UJI RESUME CHECKPOINT ===")
+    print("\n" + tr("=== PILOT: UJI RESUME CHECKPOINT ===", "=== PILOT: CHECKPOINT RESUME TEST ==="))
     test_ckpt_dir = pilot_dir / "test_ckpt"
     model_a = create_model(cfg, seed=42).to(device)
     optim_a = create_adamw_optimizer(model_a, lr=best_lr)
@@ -94,7 +95,7 @@ def run_pilot(
     # Latih 10 step
     for _ in range(10):
         x, y = loader_a.next_batch(micro_batch=2, seq_len=128, device=device)
-        loss = loss_fn(model_a(x).logits.view(-1, cfg.vocab_size), y.view(-1))
+        loss = loss_fn(model_a(x).logits.reshape(-1, cfg.vocab_size), y.reshape(-1))
         loss.backward()
         optim_a.step()
         optim_a.zero_grad()
@@ -116,7 +117,11 @@ def run_pilot(
     x11_b, y11_b = loader_b.next_batch(micro_batch=2, seq_len=128, device=device)
 
     is_resume_identical = torch.equal(x11_a, x11_b) and torch.equal(y11_a, y11_b)
-    print(f"Uji resume batch identik: {'[OK] Berhasil' if is_resume_identical else '[GAGAL] Mismatch'}")
+    res_str = tr(
+        f"Uji resume batch identik: {'[OK] Berhasil' if is_resume_identical else '[GAGAL] Mismatch'}",
+        f"Resume identical batch test: {'[OK] Success' if is_resume_identical else '[FAILED] Mismatch'}"
+    )
+    print(res_str)
 
     # 3. Laporan Fertilitas
     tok_meta_path = project_dir / "tokenizer" / "tokenizer_meta.json"
@@ -136,5 +141,5 @@ def run_pilot(
     }
 
     atomic_write_json(pilot_dir / "result.json", result)
-    print(f"\n[OK] Pilot selesai. Rekomendasi LR terbaik: {best_lr:.2e}")
+    print("\n" + tr(f"[OK] Pilot selesai. Rekomendasi LR terbaik: {best_lr:.2e}", f"[OK] Pilot complete. Best recommended LR: {best_lr:.2e}"))
     return result

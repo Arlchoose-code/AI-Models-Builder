@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from llmkit.i18n import tr
+
 
 def atomic_write_json(file_path: Path, data: Any) -> None:
     """Tulis file JSON secara atomik (.tmp -> os.replace)."""
@@ -134,21 +136,21 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
     proj_file = project_dir / "project.json"
     if not proj_file.exists():
         return {
-            "stages": {"init": {"status": "[ ]", "label": "belum"}},
+            "stages": {"init": {"status": "[ ]", "label": tr("belum", "pending")}},
             "next_step": "init",
             "next_command": "python main.py init",
-            "warning": "Proyek belum diinisialisasi."
+            "warning": tr("Proyek belum diinisialisasi.", "Project not yet initialized.")
         }
 
     try:
         project_data = load_project(project_dir)
-        stages["init"] = {"status": "[x]", "label": "selesai", "data": project_data}
+        stages["init"] = {"status": "[x]", "label": tr("selesai", "finished"), "data": project_data}
     except Exception as e:
         return {
-            "stages": {"init": {"status": "[!]", "label": "rusak", "error": str(e)}},
+            "stages": {"init": {"status": "[!]", "label": tr("rusak", "corrupted"), "error": str(e)}},
             "next_step": "init",
             "next_command": "python main.py init",
-            "warning": "project.json rusak."
+            "warning": tr("project.json rusak.", "project.json is corrupted.")
         }
 
     plan = project_data.get("plan", {})
@@ -165,9 +167,9 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
                 break
 
     if has_pretrain_files:
-        stages["data"] = {"status": "[x]", "label": "ada file data"}
+        stages["data"] = {"status": "[x]", "label": tr("ada file data", "data files present")}
     else:
-        stages["data"] = {"status": "[ ]", "label": "belum diisi"}
+        stages["data"] = {"status": "[ ]", "label": tr("belum diisi", "not populated yet")}
         if not next_step:
             next_step = "data"
             next_command = "python main.py check"
@@ -176,9 +178,9 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
     tok_json = project_dir / "tokenizer" / "tokenizer.json"
     tok_meta = project_dir / "tokenizer" / "tokenizer_meta.json"
     if tok_json.exists() and tok_meta.exists():
-        stages["tokenizer"] = {"status": "[x]", "label": "selesai"}
+        stages["tokenizer"] = {"status": "[x]", "label": tr("selesai", "finished")}
     else:
-        stages["tokenizer"] = {"status": "[ ]", "label": "belum"}
+        stages["tokenizer"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and has_pretrain_files:
             next_step = "tokenizer"
             next_command = "python main.py tokenizer"
@@ -192,17 +194,17 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
             recorded_fp = manifest.get("data_fingerprint", [])
             current_fp = compute_data_fingerprint(pretrain_data_dir)
             if recorded_fp == current_fp:
-                stages["prep"] = {"status": "[x]", "label": "selesai"}
+                stages["prep"] = {"status": "[x]", "label": tr("selesai", "finished")}
             else:
-                stages["prep"] = {"status": "[!]", "label": "STALE (data berubah)", "stale": True}
+                stages["prep"] = {"status": "[!]", "label": tr("STALE (data berubah)", "STALE (data changed)"), "stale": True}
                 if not next_step:
                     next_step = "prep"
                     next_command = "python main.py prep"
-                    warning_note = "Data mentah berubah sejak terakhir di-prep. Perlu prep ulang."
+                    warning_note = tr("Data mentah berubah sejak terakhir di-prep. Perlu prep ulang.", "Raw data changed since last prep. Needs re-prep.")
         except Exception:
-            stages["prep"] = {"status": "[!]", "label": "manifest rusak"}
+            stages["prep"] = {"status": "[!]", "label": tr("manifest rusak", "corrupted manifest")}
     else:
-        stages["prep"] = {"status": "[ ]", "label": "belum"}
+        stages["prep"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and stages.get("tokenizer", {}).get("status") == "[x]":
             next_step = "prep"
             next_command = "python main.py prep"
@@ -215,13 +217,14 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
             with open(bench_file, "r", encoding="utf-8") as f:
                 bench_data = json.load(f)
             if bench_data.get("config_hash") == curr_cfg_hash:
-                stages["bench"] = {"status": "[x]", "label": f"selesai ({bench_data.get('tok_per_s', 0):,} tok/s)"}
+                tok_s = bench_data.get('tok_per_s', 0)
+                stages["bench"] = {"status": "[x]", "label": tr(f"selesai ({tok_s:,} tok/s)", f"finished ({tok_s:,} tok/s)")}
             else:
-                stages["bench"] = {"status": "[!]", "label": "STALE (arsitektur berubah)"}
+                stages["bench"] = {"status": "[!]", "label": tr("STALE (arsitektur berubah)", "STALE (architecture changed)")}
         except Exception:
-            stages["bench"] = {"status": "[!]", "label": "bench.json rusak"}
+            stages["bench"] = {"status": "[!]", "label": tr("bench.json rusak", "bench.json corrupted")}
     else:
-        stages["bench"] = {"status": "[ ]", "label": "belum"}
+        stages["bench"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and stages.get("prep", {}).get("status") == "[x]":
             next_step = "bench"
             next_command = "python main.py bench"
@@ -229,9 +232,9 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
     # 6. pilot
     pilot_file = project_dir / "pilot" / "result.json"
     if pilot_file.exists():
-        stages["pilot"] = {"status": "[x]", "label": "selesai"}
+        stages["pilot"] = {"status": "[x]", "label": tr("selesai", "finished")}
     else:
-        stages["pilot"] = {"status": "[ ]", "label": "belum"}
+        stages["pilot"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and stages.get("bench", {}).get("status") == "[x]":
             next_step = "pilot"
             next_command = "python main.py pilot"
@@ -275,16 +278,16 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
                     pass
 
     if pretrain_finished:
-        stages["pretrain"] = {"status": "[x]", "label": "selesai"}
+        stages["pretrain"] = {"status": "[x]", "label": tr("selesai", "finished")}
     elif pretrain_crashed:
-        stages["pretrain"] = {"status": "[!]", "label": "terhenti / crash"}
+        stages["pretrain"] = {"status": "[!]", "label": tr("terhenti / crash", "stopped / crash")}
         next_step = "pretrain"
         next_command = "python main.py pretrain --resume"
-        warning_note = "Training berhenti tiba-tiba (sesi putus/crash?). Silakan resume."
+        warning_note = tr("Training berhenti tiba-tiba (sesi putus/crash?). Silakan resume.", "Training stopped abruptly (session disconnected/crash?). Please resume.")
     elif latest_pretrain_run and latest_pretrain_run[1].get("status") == "running":
-        stages["pretrain"] = {"status": "[~]", "label": "sedang berjalan"}
+        stages["pretrain"] = {"status": "[~]", "label": tr("sedang berjalan", "running")}
     else:
-        stages["pretrain"] = {"status": "[ ]", "label": "belum"}
+        stages["pretrain"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and stages.get("pilot", {}).get("status") == "[x]":
             next_step = "pretrain"
             next_command = "python main.py pretrain"
@@ -307,11 +310,11 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
                     pass
 
     if sft_finished:
-        stages["sft"] = {"status": "[x]", "label": "selesai"}
+        stages["sft"] = {"status": "[x]", "label": tr("selesai", "finished")}
     elif latest_sft_run and latest_sft_run[1].get("status") == "running":
-        stages["sft"] = {"status": "[~]", "label": "sedang berjalan"}
+        stages["sft"] = {"status": "[~]", "label": tr("sedang berjalan", "running")}
     else:
-        stages["sft"] = {"status": "[ ]", "label": "belum"}
+        stages["sft"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and pretrain_finished:
             next_step = "sft"
             next_command = "python main.py sft"
@@ -325,9 +328,9 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
                 break
 
     if eval_done:
-        stages["eval"] = {"status": "[x]", "label": "selesai"}
+        stages["eval"] = {"status": "[x]", "label": tr("selesai", "finished")}
     else:
-        stages["eval"] = {"status": "[ ]", "label": "belum"}
+        stages["eval"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and sft_finished:
             next_step = "eval"
             next_command = "python main.py eval"
@@ -341,16 +344,16 @@ def detect_stage_status(project_dir: Path) -> dict[str, Any]:
             break
 
     if has_export:
-        stages["export"] = {"status": "[x]", "label": "selesai"}
+        stages["export"] = {"status": "[x]", "label": tr("selesai", "finished")}
     else:
-        stages["export"] = {"status": "[ ]", "label": "belum"}
+        stages["export"] = {"status": "[ ]", "label": tr("belum", "pending")}
         if not next_step and (sft_finished or eval_done):
             next_step = "export"
             next_command = "python main.py export"
 
     return {
         "stages": stages,
-        "next_step": next_step or "selesai",
+        "next_step": next_step or tr("selesai", "completed"),
         "next_command": next_command or "python main.py chat",
         "warning": warning_note,
         "latest_pretrain_run": latest_pretrain_run,

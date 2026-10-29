@@ -11,6 +11,7 @@ from tokenizers import Tokenizer
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, Qwen3Config, Qwen3ForCausalLM
 from llmkit.chat_template import EOS_TOKEN, PAD_TOKEN, PRETRAIN_EOS_TOKEN, SPECIAL_TOKENS, get_jinja_template
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint
+from llmkit.i18n import tr
 from llmkit.model import build_qwen3_config, create_model
 from llmkit.state import load_project, log_history
 from llmkit.ui import print_info, print_ok, print_warn
@@ -54,7 +55,7 @@ def export_hf_model(
     if not source_ckpt or not source_ckpt.exists():
         raise FileNotFoundError(f"Checkpoint tidak ditemukan di {ckpt_dir}.")
 
-    print_info(f"Mengekspor bobot dari: {source_ckpt} ke {export_dir}")
+    print_info(tr(f"Mengekspor bobot dari: {source_ckpt} ke {export_dir}", f"Exporting weights from: {source_ckpt} to {export_dir}"))
 
     # 2. Muat dan Simpan Bobot Model
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
@@ -116,26 +117,31 @@ def export_hf_model(
     with open(export_dir / "special_tokens_map.json", "w", encoding="utf-8") as f:
         json.dump(special_tokens_map, f, indent=2, ensure_ascii=False)
 
-    print_ok(f"Export format Hugging Face berhasil di: {export_dir}")
+    print_ok(tr(f"Export format Hugging Face berhasil di: {export_dir}", f"Hugging Face format export successful at: {export_dir}"))
 
     # 5. Petunjuk Konversi GGUF & Ollama (Bagian 12.6)
     print("\n" + "=" * 60)
-    print("PETUNJUK KONVERSI KE GGUF / OLLAMA:")
-    print("Catatan: Periksa dokumentasi llama.cpp/Ollama terbaru karena argumen perintah dapat diperbarui.")
-    print("\n[Jalur A - Disarankan (llama.cpp)]")
-    print(f"  1. Konversi ke GGUF:")
+    print(tr("PETUNJUK KONVERSI KE GGUF / OLLAMA:", "CONVERSION INSTRUCTIONS TO GGUF / OLLAMA:"))
+    print(tr(
+        "Catatan: Periksa dokumentasi llama.cpp/Ollama terbaru karena argumen perintah dapat diperbarui.",
+        "Note: Check latest llama.cpp/Ollama documentation as command syntax may evolve."
+    ))
+    print("\n" + tr("[Jalur A - Disarankan (llama.cpp)]", "[Route A - Recommended (llama.cpp)]"))
+    print(tr("  1. Konversi ke GGUF:", "  1. Convert to GGUF:"))
     print(f"     python <llama.cpp>/convert_hf_to_gguf.py export/{export_name} --outfile {export_name}.gguf --outtype bf16")
-    print(f"  2. Kuantisasi (opsional, misal Q8_0):")
+    print(tr("  2. Kuantisasi (opsional, misal Q8_0):", "  2. Quantize (optional, e.g. Q8_0):"))
     print(f"     llama-quantize {export_name}.gguf {export_name}-q8_0.gguf Q8_0")
-    print("\n[Ollama Modelfile]")
-    print(f"  Buat file bernama 'Modelfile':")
+    print("\n" + tr("[Ollama Modelfile]", "[Ollama Modelfile]"))
+    print(tr("  Buat file bernama 'Modelfile':", "  Create a file named 'Modelfile':"))
     print(f"     FROM ./{export_name}-q8_0.gguf")
     print(f'     PARAMETER stop "<|im_end|>"')
-    print(f"  Lalu jalankan:")
+    print(tr("  Lalu jalankan:", "  Then run:"))
     print(f"     ollama create {export_name} -f Modelfile")
-    print("\n[PERINGATAN WAJIB]")
-    print("Penyebab utama hasil generasi rusak atau ngelantur setelah dikonversi adalah")
-    print("chat template atau token EOS yang tidak sama dengan saat training.")
+    print("\n" + tr("[PERINGATAN WAJIB]", "[MANDATORY WARNING]"))
+    print(tr(
+        "Penyebab utama hasil generasi rusak atau ngelantur setelah dikonversi adalah\nchat template atau token EOS yang tidak sama dengan saat training.",
+        "The primary reason converted generations degrade or hallucinate is\nchat template or EOS token mismatches with training time settings."
+    ))
     print("=" * 60 + "\n")
 
     log_history(project_dir, "export", f"--run {target_run.name}", True, f"Berhasil diexport ke {export_dir}")

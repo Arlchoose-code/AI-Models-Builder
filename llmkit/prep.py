@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Optional, Set
 import numpy as np
 from tokenizers import Tokenizer
+from llmkit.i18n import tr
 from llmkit.state import compute_data_fingerprint
 
 
@@ -277,8 +278,8 @@ def run_prep(
             pass
 
     print("\n" + "=" * 60)
-    print("HASIL DATA PREPARATION (PREP):")
-    headers = ["Sumber", "Token Aktual", "Target Needed", "Epochs", "Status"]
+    print(tr("HASIL DATA PREPARATION (PREP):", "DATA PREPARATION (PREP) RESULTS:"))
+    headers = [tr("Sumber", "Source"), tr("Token Aktual", "Actual Tokens"), tr("Target Needed", "Target Needed"), tr("Epochs", "Epochs"), tr("Status", "Status")]
     rows = []
     has_warn = False
     has_err = False
@@ -289,10 +290,10 @@ def run_prep(
         if need_tok > 0:
             epochs = act_tok / need_tok
             if epochs < 0.125:
-                status = "ERROR (>8x epoch)"
+                status = tr("ERROR (>8x epoch)", "ERROR (>8x epochs)")
                 has_err = True
             elif epochs < 0.25:
-                status = "PERINGATAN (4-8x epoch)"
+                status = tr("PERINGATAN (4-8x epoch)", "WARN (4-8x epochs)")
                 has_warn = True
             else:
                 status = "OK"
@@ -312,12 +313,12 @@ def run_prep(
 
     from llmkit.ui import print_table, print_warn, print_error
     print_table(headers, rows)
-    print(f"Total Token Pretrain: {total_tokens_all:,}")
+    print(tr(f"Total Token Pretrain: {total_tokens_all:,}", f"Total Pretrain Tokens: {total_tokens_all:,}"))
 
     if has_err:
-        print_error("Ditemukan folder dengan pengulangan data > 8 epoch! Tambah data atau kurangi target.")
+        print_error(tr("Ditemukan folder dengan pengulangan data > 8 epoch! Tambah data atau kurangi target.", "Folders found with data repetition > 8 epochs! Add more data or reduce targets."))
     elif has_warn:
-        print_warn("Ditemukan folder dengan pengulangan data antara 4-8 epoch.")
+        print_warn(tr("Ditemukan folder dengan pengulangan data antara 4-8 epoch.", "Folders found with data repetition between 4-8 epochs."))
 
-    print("\nLanjut: python main.py bench")
+    print("\n" + tr("Lanjut: python main.py bench", "Next: python main.py bench"))
     return manifest_data

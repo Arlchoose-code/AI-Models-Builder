@@ -21,6 +21,7 @@ from llmkit.checkpoint import (
     save_checkpoint,
 )
 from llmkit.dataset import PretrainDataLoader
+from llmkit.i18n import tr
 from llmkit.model import (
     build_qwen3_config,
     count_parameters,
@@ -110,10 +111,10 @@ def evaluate_validation(
                     if use_autocast:
                         with torch.amp.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=cast_dtype):
                             outputs = model(x)
-                            loss = loss_fn(outputs.logits.float().view(-1, outputs.logits.size(-1)), y.view(-1))
+                            loss = loss_fn(outputs.logits.float().reshape(-1, outputs.logits.size(-1)), y.reshape(-1))
                     else:
                         outputs = model(x)
-                        loss = loss_fn(outputs.logits.float().view(-1, outputs.logits.size(-1)), y.view(-1))
+                        loss = loss_fn(outputs.logits.float().reshape(-1, outputs.logits.size(-1)), y.reshape(-1))
 
                     src_losses.append(loss.item())
 
@@ -278,9 +279,9 @@ def run_pretrain(
 
             d_state = res_data.get("data_state", {})
             loader.load_state(d_state)
-            print(f"Resume berhasil dari {target_ckpt.name} (step {step:,}, {tokens_seen / 1e9:.2f}B token).")
+            print(tr(f"Resume berhasil dari {target_ckpt.name} (step {step:,}, {tokens_seen / 1e9:.2f}B token).", f"Resume successful from {target_ckpt.name} (step {step:,}, {tokens_seen / 1e9:.2f}B tokens)."))
         else:
-            raise FileNotFoundError("Checkpoint tidak ditemukan untuk resume.")
+            raise FileNotFoundError(tr("Checkpoint tidak ditemukan untuk resume.", "Checkpoint not found for resume."))
 
     total_steps = int(hyper.get("total_steps", 50000))
     tokens_target = float(plan.get("tokens", {}).get("target", 1e9))
@@ -306,7 +307,7 @@ def run_pretrain(
 
     def handle_signal(sig, frame):
         nonlocal stop_requested
-        print("\nSinyal berhenti diterima. Menyimpan checkpoint sebelum keluar...")
+        print("\n" + tr("Sinyal berhenti diterima. Menyimpan checkpoint sebelum keluar...", "Stop signal received. Saving checkpoint before exit..."))
         stop_requested = True
 
     signal.signal(signal.SIGINT, handle_signal)
@@ -327,7 +328,7 @@ def run_pretrain(
             if use_autocast:
                 with torch.amp.autocast(device_type="cuda" if "cuda" in device else "cpu", dtype=cast_dtype):
                     outputs = model(x)
-                    loss = loss_fn(outputs.logits.float().view(-1, outputs.logits.size(-1)), y.view(-1))
+                    loss = loss_fn(outputs.logits.float().reshape(-1, outputs.logits.size(-1)), y.reshape(-1))
                     loss = loss / grad_accum
                 if scaler:
                     scaler.scale(loss).backward()
@@ -335,7 +336,7 @@ def run_pretrain(
                     loss.backward()
             else:
                 outputs = model(x)
-                loss = loss_fn(outputs.logits.float().view(-1, outputs.logits.size(-1)), y.view(-1))
+                loss = loss_fn(outputs.logits.float().reshape(-1, outputs.logits.size(-1)), y.reshape(-1))
                 loss = loss / grad_accum
                 loss.backward()
 
@@ -354,7 +355,7 @@ def run_pretrain(
                 if rollback_count < 3:
                     rollback_count += 1
                     spike_consecutive = 0
-                    print(f"\n[!] Deteksi lonjakan loss (spike). Rollback #{rollback_count} ke checkpoint sehat...")
+                    print("\n" + tr(f"[!] Deteksi lonjakan loss (spike). Rollback #{rollback_count} ke checkpoint sehat...", f"[!] Loss spike detected. Rollback #{rollback_count} to healthy checkpoint..."))
                     latest_healthy = find_latest_checkpoint(ckpt_dir)
                     if latest_healthy:
                         res = load_checkpoint(latest_healthy, model, optimizer, scaler, device=device)
@@ -364,10 +365,10 @@ def run_pretrain(
                             loader.next_batch(micro_batch, seq_len, device="cpu")
                         lr_scale *= 0.8
                         loss_ema = None
-                        print(f"Rollback selesai. LR diturunkan 20% (lr_scale={lr_scale:.2f}). Melanjutkan...")
+                        print(tr(f"Rollback selesai. LR diturunkan 20% (lr_scale={lr_scale:.2f}). Melanjutkan...", f"Rollback complete. LR reduced by 20% (lr_scale={lr_scale:.2f}). Continuing..."))
                         continue
                 else:
-                    print("\n[ERROR] Lonjakan loss berulang setelah 3 kali rollback. Training dihentikan.")
+                    print("\n" + tr("[ERROR] Lonjakan loss berulang setelah 3 kali rollback. Training dihentikan.", "[ERROR] Repeated loss spikes after 3 rollbacks. Training stopped."))
                     atomic_write_json(run_file, {
                         "kind": "pretrain", "status": "stopped_spike", "step": step,
                         "tokens_seen": tokens_seen, "finished": False
@@ -469,7 +470,7 @@ def run_pretrain(
 
         # Batas jam (--max-hours)
         if max_hours is not None and (now - start_time) >= (max_hours * 3600.0):
-            print(f"\nBatas waktu {max_hours} jam tercapai. Menyimpan dan jeda...")
+            print("\n" + tr(f"Batas waktu {max_hours} jam tercapai. Menyimpan dan jeda...", f"Time limit of {max_hours} hours reached. Saving and pausing..."))
             stop_requested = True
 
     # 6. Penyelesaian atau Jeda

@@ -21,6 +21,7 @@ from llmkit.sft import run_sft
 from llmkit.state import load_project, save_project
 from llmkit.train import evaluate_validation, run_pretrain
 from llmkit.cli import handle_replan
+from llmkit.i18n import get_lang, load_saved_lang, save_lang, set_lang, tr
 from tests.make_dummy_data import create_dummy_pretrain_data, create_dummy_sft_data
 
 
@@ -208,6 +209,80 @@ class TestFixesAndFeatures(unittest.TestCase):
         # Manual override context_final harus tetap dipertahankan
         self.assertEqual(updated_proj["settings"]["context_final"]["value"], 8192)
         self.assertEqual(updated_proj["settings"]["context_final"]["mode"], "manual")
+
+    def test_i18n_translation_and_switching(self):
+        """Uji fungsionalitas penerjemahan dan pergantian bahasa runtime."""
+        orig_lang = get_lang()
+        try:
+            set_lang("id")
+            self.assertEqual(get_lang(), "id")
+            self.assertEqual(tr("halo", "hello"), "halo")
+            self.assertEqual(tr("Token: {n}", "Tokens: {n}", n=100), "Token: 100")
+
+            set_lang("en")
+            self.assertEqual(get_lang(), "en")
+            self.assertEqual(tr("halo", "hello"), "hello")
+            self.assertEqual(tr("Token: {n}", "Tokens: {n}", n=100), "Tokens: 100")
+
+            with self.assertRaises(ValueError):
+                set_lang("fr")
+        finally:
+            set_lang(orig_lang)
+
+    def test_i18n_persistence(self):
+        """Uji penyimpanan preferensi bahasa ke project.json."""
+        orig_lang = get_lang()
+        try:
+            # Simpan preferensi bahasa en ke project temp
+            save_lang("en", persist_global=False, project_dir=self.temp_dir)
+            loaded = load_saved_lang(self.temp_dir)
+            self.assertEqual(loaded, "en")
+
+            # Verifikasi bahwa file project.json memuat field lang: en
+            with open(self.temp_dir / "project.json", "r", encoding="utf-8") as f:
+                proj_data = json.load(f)
+            self.assertEqual(proj_data.get("lang"), "en")
+        finally:
+            set_lang(orig_lang)
+
+    def test_detect_stage_status_localization(self):
+        """Uji lokalisasi label status panggung (detect_stage_status) dalam bahasa EN dan ID."""
+        orig_lang = get_lang()
+        try:
+            from llmkit.state import detect_stage_status
+            set_lang("id")
+            res_id = detect_stage_status(self.temp_dir)
+            self.assertEqual(res_id["stages"]["init"]["label"], "selesai")
+            self.assertEqual(res_id["stages"]["data"]["label"], "belum diisi")
+
+            set_lang("en")
+            res_en = detect_stage_status(self.temp_dir)
+            self.assertEqual(res_en["stages"]["init"]["label"], "finished")
+            self.assertEqual(res_en["stages"]["data"]["label"], "not populated yet")
+        finally:
+            set_lang(orig_lang)
+
+    def test_init_interactive_language_selection(self):
+        """Uji bahwa prompt interaktif handle_init dapat memilih bahasa English dan tersimpan."""
+        orig_lang = get_lang()
+        try:
+            from unittest.mock import patch
+            from llmkit.cli import handle_init
+            clean_proj = self.temp_dir / "clean_proj"
+            clean_proj.mkdir()
+
+            # Input stream: 1 (en), project_name, size, token_mode, gpu, goal, profile, tc, th, vis, id_tok, long_ctx, model_name, creator, runs_dir
+            inputs = ["1", "my-en-model", "0.05", "2", "RTX 4060 Laptop", "1", "laptop", "y", "y", "n", "", "n", "EnModel", "Dev", "runs"]
+            with patch("builtins.input", side_effect=inputs):
+                args = DummyArgs(project=str(clean_proj), yes=False, answers=None, lang=None)
+                handle_init(args)
+
+            with open(clean_proj / "project.json", "r", encoding="utf-8") as f:
+                proj = json.load(f)
+            self.assertEqual(proj.get("lang"), "en")
+            self.assertEqual(proj.get("name"), "my-en-model")
+        finally:
+            set_lang(orig_lang)
 
 
 if __name__ == "__main__":

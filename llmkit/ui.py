@@ -25,6 +25,8 @@ except ImportError:
     _HAS_RICH = False
     console = None
 
+from llmkit.i18n import get_lang, tr
+
 
 def format_number(n: float | int) -> str:
     """Format angka besar menjadi string ramah dibaca (k, M, B, T)."""
@@ -49,19 +51,28 @@ def format_exact_number(n: int) -> str:
 
 
 def format_time(seconds: float) -> str:
-    """Format waktu: '199 jam (8.3 hari)', '12.5 menit', '45 detik'."""
+    """Format waktu / Format duration (dwibahasa: EN/ID)."""
+    is_en = (get_lang() == "en")
+    sec_w = "seconds" if is_en else "detik"
+    min_w = "mins" if is_en else "menit"
+    hr_w = "hours" if is_en else "jam"
+    day_w = "days" if is_en else "hari"
+
     if seconds < 0:
-        return "0 detik"
+        return f"0 {sec_w}"
     if seconds < 60:
-        return f"{seconds:.1f} detik".replace(".0 detik", " detik")
+        s = f"{seconds:.1f} {sec_w}"
+        return s.replace(f".0 {sec_w}", f" {sec_w}")
     minutes = seconds / 60.0
     if minutes < 60:
-        return f"{minutes:.1f} menit".replace(".0 menit", " menit")
+        s = f"{minutes:.1f} {min_w}"
+        return s.replace(f".0 {min_w}", f" {min_w}")
     hours = minutes / 60.0
     days = hours / 24.0
     if days >= 1.0:
-        return f"{hours:.0f} jam ({days:.1f} hari)"
-    return f"{hours:.1f} jam".replace(".0 jam", " jam")
+        return f"{hours:.0f} {hr_w} ({days:.1f} {day_w})"
+    s = f"{hours:.1f} {hr_w}"
+    return s.replace(f".0 {hr_w}", f" {hr_w}")
 
 
 def print_ok(msg: str) -> None:
@@ -151,7 +162,7 @@ def prompt_input(
         try:
             raw = input(full_prompt).strip()
         except (EOFError, KeyboardInterrupt):
-            print("\nDibatalkan oleh pengguna.")
+            print("\n" + tr("Dibatalkan oleh pengguna.", "Cancelled by user."))
             sys.exit(1)
 
         if not raw and default is not None:
@@ -165,15 +176,16 @@ def prompt_input(
             return parsed
 
         retries += 1
-        print_warn(f"{err_msg or 'Input tidak valid.'} (Percobaan {retries}/{max_retries})")
+        err_text = err_msg or tr("Input tidak valid.", "Invalid input.")
+        print_warn(f"{err_text} ({tr('Percobaan', 'Attempt')} {retries}/{max_retries})")
 
     if default is not None and validator is not None:
         valid, _, parsed = validator(str(default))
         if valid:
-            print_info(f"Menggunakan nilai default: {default}")
+            print_info(tr(f"Menggunakan nilai default: {default}", f"Using default value: {default}"))
             return parsed
 
-    print_error("Terlalu banyak kesalahan input.")
+    print_error(tr("Terlalu banyak kesalahan input.", "Too many input errors."))
     sys.exit(1)
 
 
@@ -186,7 +198,7 @@ def confirm(question: str, default: bool = False, assume_yes: bool = False) -> b
     try:
         raw = input(full_prompt).strip().lower()
     except (EOFError, KeyboardInterrupt):
-        print("\nDibatalkan.")
+        print("\n" + tr("Dibatalkan.", "Cancelled."))
         sys.exit(1)
 
     if not raw:

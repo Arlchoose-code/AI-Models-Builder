@@ -10,6 +10,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 from llmkit.gpu_table import get_gpu_spec
+from llmkit.i18n import tr
 from llmkit.model import build_qwen3_config, create_adamw_optimizer, create_model
 from llmkit.state import atomic_write_json, compute_config_hash, load_project
 
@@ -20,7 +21,10 @@ def run_benchmark(project_dir: Path) -> dict[str, Any]:
     Simpan hasil ke bench.json dan perbarui estimasi durasi/biaya.
     """
     if not torch.cuda.is_available():
-        print("[INFO] Benchmark GPU (bench) memerlukan GPU CUDA. Dilewati pada lingkungan CPU.")
+        print(tr(
+            "[INFO] Benchmark GPU (bench) memerlukan GPU CUDA. Dilewati pada lingkungan CPU.",
+            "[INFO] GPU Benchmark (bench) requires a CUDA GPU. Skipped in CPU environment."
+        ))
         return {"status": "skipped", "reason": "No CUDA GPU available"}
 
     project_data = load_project(project_dir)
@@ -59,7 +63,7 @@ def run_benchmark(project_dir: Path) -> dict[str, Any]:
                     y = torch.randint(0, cfg.vocab_size, (mb, seq_len), device="cuda")
                     with torch.amp.autocast(device_type="cuda", dtype=cast_dtype):
                         out = model(x)
-                        loss = loss_fn(out.logits.view(-1, cfg.vocab_size), y.view(-1))
+                        loss = loss_fn(out.logits.reshape(-1, cfg.vocab_size), y.reshape(-1))
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
@@ -74,7 +78,7 @@ def run_benchmark(project_dir: Path) -> dict[str, Any]:
                     y = torch.randint(0, cfg.vocab_size, (mb, seq_len), device="cuda")
                     with torch.amp.autocast(device_type="cuda", dtype=cast_dtype):
                         out = model(x)
-                        loss = loss_fn(out.logits.view(-1, cfg.vocab_size), y.view(-1))
+                        loss = loss_fn(out.logits.reshape(-1, cfg.vocab_size), y.reshape(-1))
                     loss.backward()
                     optimizer.step()
                     optimizer.zero_grad()
@@ -137,10 +141,19 @@ def run_benchmark(project_dir: Path) -> dict[str, Any]:
 
     # Simpan ke bench.json
     atomic_write_json(project_dir / "bench.json", result_data)
-    print(f"\n[OK] Benchmark selesai:")
-    print(f"  GPU               : {dev_name} (VRAM {vram_gb:.1f} GB)")
-    print(f"  Konfigurasi optimal: micro_batch={best_config['micro_batch']}, grad_accum={best_config['grad_accum']}, grad_checkpointing={best_config['grad_checkpointing']}")
-    print(f"  Kecepatan puncak  : {best_config['tok_per_s']:,} token/detik (Memori {best_config['peak_mem_gb']:.1f} GB)")
-    print(f"  Estimasi durasi nyata: {actual_hours:.1f} jam ({actual_hours / 24.0:.1f} hari) ~ ${actual_cost:.2f}")
+    print("\n" + tr("[OK] Benchmark selesai:", "[OK] Benchmark completed:"))
+    print(f"  GPU                 : {dev_name} (VRAM {vram_gb:.1f} GB)")
+    print(tr(
+        f"  Konfigurasi optimal : micro_batch={best_config['micro_batch']}, grad_accum={best_config['grad_accum']}, grad_checkpointing={best_config['grad_checkpointing']}",
+        f"  Optimal config      : micro_batch={best_config['micro_batch']}, grad_accum={best_config['grad_accum']}, grad_checkpointing={best_config['grad_checkpointing']}"
+    ))
+    print(tr(
+        f"  Kecepatan puncak    : {best_config['tok_per_s']:,} token/detik (Memori {best_config['peak_mem_gb']:.1f} GB)",
+        f"  Peak speed          : {best_config['tok_per_s']:,} tokens/sec (Memory {best_config['peak_mem_gb']:.1f} GB)"
+    ))
+    print(tr(
+        f"  Estimasi durasi nyata: {actual_hours:.1f} jam ({actual_hours / 24.0:.1f} hari) ~ ${actual_cost:.2f}",
+        f"  Real duration est   : {actual_hours:.1f} hours ({actual_hours / 24.0:.1f} days) ~ ${actual_cost:.2f}"
+    ))
 
     return result_data

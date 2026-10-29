@@ -382,12 +382,12 @@ def check_dataset(
     log_file = project_dir / "logs" / "check_errors.txt"
     try:
         log_file.parent.mkdir(parents=True, exist_ok=True)
-        lines = []
+        from llmkit.i18n import tr
         if errors:
-            lines.append("=== DAFTAR ERROR ===")
+            lines.append(tr("=== DAFTAR ERROR ===", "=== ERROR LIST ==="))
             lines.extend(errors)
         if warnings:
-            lines.append("\n=== DAFTAR PERINGATAN ===")
+            lines.append("\n" + tr("=== DAFTAR PERINGATAN ===", "=== WARNING LIST ==="))
             lines.extend(warnings)
         with open(log_file, "w", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")

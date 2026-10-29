@@ -19,7 +19,7 @@ from llmkit.dataset import SFTDataset
 from llmkit.evaluate import compare_runs, evaluate_pretrain_model
 from llmkit.model import build_qwen3_config, create_adamw_optimizer, create_model
 from llmkit.planner import make_plan
-from llmkit.sft import get_sft_lr, hashlib_id_val, load_sft_samples, run_sft
+from llmkit.sft import get_sft_lr, hashlib_id_val, load_sft_samples, run_sft, split_sft_samples
 from llmkit.state import load_project, save_project
 from llmkit.train import evaluate_validation, run_pretrain
 from llmkit.cli import handle_replan
@@ -64,7 +64,13 @@ class TestFixesAndFeatures(unittest.TestCase):
         # Mock tokenizer untuk tes yang membutuhkannya
         tok_dir = self.temp_dir / "tokenizer"
         tok_dir.mkdir(parents=True, exist_ok=True)
-        tok = Tokenizer(BPE())
+        from llmkit.tokenizer_train import build_bpe_trainer
+        tok, trainer = build_bpe_trainer(vocab_size=1000)
+        tok.train_from_iterator([
+            "Kamu adalah TestAI asisten AI dwibahasa buatan AuthorName.",
+            "Siapa kamu? Aku TestAI buatan AuthorName.",
+            "Hello world test pretrain and sft",
+        ], trainer=trainer)
         tok.save(str(tok_dir / "tokenizer.json"))
 
     def tearDown(self):
@@ -306,6 +312,10 @@ class TestFixesAndFeatures(unittest.TestCase):
         self.assertEqual(ds.default_system, custom_sys)
         rendered, _ = render_conversation(sample, default_system=ds.default_system)
         self.assertIn("Kamu adalah TestAI, asisten AI dwibahasa (Indonesia dan Inggris) buatan AuthorName.", rendered)
+        # Verifikasi bahwa encoded tokens di dataset benar-benar mengandung identitas proyek
+        decoded_tokens = tok.decode(ds[0][0])
+        self.assertIn("TestAI", decoded_tokens)
+        self.assertIn("AuthorName", decoded_tokens)
 
     def test_chat_template_triggers_and_jinja_consistency(self):
         """Uji prompt trigger /think dan konsistensi template Jinja (Issue 2)."""
@@ -332,12 +342,25 @@ class TestFixesAndFeatures(unittest.TestCase):
         hf_res, _ = render_jinja_template(conversations=[msgs], chat_template=jinja_str)
         self.assertEqual(rendered, hf_res[0])
 
-        # 3. Template Jinja dengan argumen mode='think' menambahkan tag /think
+        # 3. Prompt dengan trigger eksplisit /no_think identik antara Jinja dan Python
+        sample_nothink = {
+            "id": "nt-01",
+            "messages": [
+                {"role": "user", "content": "Hitung 25 * 4? /no_think"},
+                {"role": "assistant", "reasoning": "25 * 4 = 100", "content": "Hasilnya 100."}
+            ]
+        }
+        rendered_nt, _ = render_conversation(sample_nothink, default_system=custom_sys, allow_think_tags=True)
+        self.assertIn("<think>\n\n</think>\n\n", rendered_nt)
+        hf_nt_res, _ = render_jinja_template(conversations=[sample_nothink["messages"]], chat_template=jinja_str)
+        self.assertEqual(rendered_nt, hf_nt_res[0])
+
+        # 4. Template Jinja dengan argumen mode='think' menambahkan tag /think
         sample_untagged = [{"role": "user", "content": "Hitung 25 * 4?"}]
         hf_think_res, _ = render_jinja_template(conversations=[sample_untagged], chat_template=jinja_str, mode="think")
         self.assertIn("Hitung 25 * 4? /think<|im_end|>", hf_think_res[0])
 
-        # 4. force_nothink pada generation prompt
+        # 5. force_nothink pada generation prompt
         py_gen, _ = render_conversation({"id": "g-01", "messages": sample_untagged}, default_system=custom_sys, add_generation_prompt=True, force_nothink=True)
         hf_gen, _ = render_jinja_template(conversations=[sample_untagged], chat_template=jinja_str, add_generation_prompt=True, force_nothink=True)
         self.assertIn("<think>\n\n</think>\n\n", py_gen)
@@ -380,7 +403,7 @@ class TestFixesAndFeatures(unittest.TestCase):
         self.assertEqual(len(ds), 1)
 
     def test_sft_identity_samples_never_diverted_to_val(self):
-        """Uji bahwa 100% sampel identity dipertahankan di train split (Issue 5)."""
+        """Uji bahwa 100% sampel identity dipertahankan di train split lewat split_sft_samples (Issue 5)."""
         samples = []
         # Tambahkan 200 sampel identity
         for i in range(200):
@@ -389,38 +412,26 @@ class TestFixesAndFeatures(unittest.TestCase):
                 "category": "identity",
                 "messages": [{"role": "user", "content": f"Q{i}"}, {"role": "assistant", "content": f"A{i}"}]
             })
-        # Tambahkan 500 sampel chat umum
+        # Tambahkan 500 sampel chat umum (sebagian dengan id bahasa id-*)
         for i in range(500):
             samples.append({
-                "id": f"chat-{i:03d}",
+                "id": f"chat-{i:03d}" if i % 2 == 0 else f"id-chat-{i:03d}",
                 "category": "chat",
                 "messages": [{"role": "user", "content": f"C{i}"}, {"role": "assistant", "content": f"R{i}"}]
             })
 
-        train_samples = []
-        val_samples = []
-        for s in samples:
-            is_identity = (
-                s.get("category") == "identity"
-                or s.get("_category") == "identity"
-                or str(s.get("id", "")).startswith("ident")
-                or str(s.get("id", "")).startswith("id-")
-            )
-            if is_identity:
-                train_samples.append(s)
-                continue
-            s_id = str(s.get("id", ""))
-            h = int(hashlib_id_val(s_id))
-            if h % 100 == 0 and len(val_samples) < 5000:
-                val_samples.append(s)
-            else:
-                train_samples.append(s)
+        train_samples, val_samples = split_sft_samples(samples)
 
-        # Pastikan seluruh 200 sampel identitas ada di train_samples
+        # Pastikan seluruh 200 sampel identitas ada di train_samples dan 0 di val_samples
         identity_in_train = [s for s in train_samples if s.get("category") == "identity"]
         identity_in_val = [s for s in val_samples if s.get("category") == "identity"]
         self.assertEqual(len(identity_in_train), 200)
         self.assertEqual(len(identity_in_val), 0)
+
+        # Pastikan sampel non-identitas dapat masuk val_samples
+        self.assertGreater(len(val_samples), 0)
+        for vs in val_samples:
+            self.assertEqual(vs.get("category"), "chat")
 
 
 if __name__ == "__main__":

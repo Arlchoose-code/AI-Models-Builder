@@ -76,6 +76,70 @@ def load_sft_samples(data_dir: Path) -> list[dict[str, Any]]:
     return samples
 
 
+def hashlib_id_val(s_id: str) -> int:
+    """Hash deterministik untuk memisahkan eval split SFT."""
+    import hashlib
+    return int(hashlib.md5(s_id.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def split_sft_samples(
+    samples: list[dict[str, Any]],
+    val_ratio: float = 0.01,
+    max_val: int = 5000,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Pisahkan hold-out untuk evaluasi (deterministik berdasarkan hash ID).
+    Sampel identity selalu 100% masuk train_samples dan tidak pernah dialihkan ke val.
+    """
+    train_samples: list[dict[str, Any]] = []
+    val_samples: list[dict[str, Any]] = []
+    val_mod = max(1, int(round(1.0 / val_ratio))) if val_ratio > 0 else 100
+
+    for s in samples:
+        is_identity = (
+            s.get("category") == "identity"
+            or s.get("_category") == "identity"
+            or (
+                s.get("category") in (None, "", "identity")
+                and (
+                    str(s.get("id", "")).startswith("ident")
+                    or str(s.get("id", "")).startswith("identity")
+                    or str(s.get("id", "")).startswith("id-")
+                )
+            )
+        )
+        if is_identity:
+            train_samples.append(s)
+            continue
+        s_id = str(s.get("id", ""))
+        h = int(hashlib_id_val(s_id))
+        if h % val_mod == 0 and len(val_samples) < max_val:
+            val_samples.append(s)
+        else:
+            train_samples.append(s)
+
+    if not val_samples:
+        non_identity_train = [
+            s for s in train_samples
+            if not (
+                s.get("category") == "identity"
+                or s.get("_category") == "identity"
+                or (
+                    s.get("category") in (None, "", "identity")
+                    and (
+                        str(s.get("id", "")).startswith("ident")
+                        or str(s.get("id", "")).startswith("identity")
+                        or str(s.get("id", "")).startswith("id-")
+                    )
+                )
+            )
+        ]
+        val_source = non_identity_train if non_identity_train else train_samples
+        val_samples = val_source[:min(len(val_source), 10)]
+
+    return train_samples, val_samples
+
+
 def run_sft(
     project_dir: Path,
     from_checkpoint: Optional[str] = None,
@@ -112,37 +176,7 @@ def run_sft(
 
     # Hold-out 1% untuk evaluasi (deterministik berdasarkan hash ID)
     # Sampel identity selalu 100% masuk train_samples dan tidak dialihkan ke val
-    train_samples = []
-    val_samples = []
-    for s in samples:
-        is_identity = (
-            s.get("category") == "identity"
-            or s.get("_category") == "identity"
-            or str(s.get("id", "")).startswith("ident")
-            or str(s.get("id", "")).startswith("id-")
-        )
-        if is_identity:
-            train_samples.append(s)
-            continue
-        s_id = str(s.get("id", ""))
-        h = int(hashlib_id_val(s_id))
-        if h % 100 == 0 and len(val_samples) < 5000:
-            val_samples.append(s)
-        else:
-            train_samples.append(s)
-
-    if not val_samples:
-        non_identity_train = [
-            s for s in train_samples
-            if not (
-                s.get("category") == "identity"
-                or s.get("_category") == "identity"
-                or str(s.get("id", "")).startswith("ident")
-                or str(s.get("id", "")).startswith("id-")
-            )
-        ]
-        val_source = non_identity_train if non_identity_train else train_samples
-        val_samples = val_source[:min(len(val_source), 10)]
+    train_samples, val_samples = split_sft_samples(samples)
 
     vram_gb = 24.0
     if torch.cuda.is_available():
@@ -153,6 +187,12 @@ def run_sft(
 
     train_dataset = SFTDataset(train_samples, tokenizer, max_seq_len=max_seq_len, default_system=default_system)
     val_dataset = SFTDataset(val_samples, tokenizer, max_seq_len=max_seq_len, default_system=default_system)
+
+    if len(train_dataset) == 0:
+        raise ValueError(tr(
+            f"Semua sampel latih SFT ({len(train_samples)}) melebihi max_seq_len ({max_seq_len}).",
+            f"All SFT training samples ({len(train_samples)}) exceed max_seq_len ({max_seq_len})."
+        ))
 
     total_skipped = train_dataset.skipped_overlong + val_dataset.skipped_overlong
     if total_skipped > 0:
@@ -250,9 +290,6 @@ def run_sft(
         print("-" * 40)
     print("=" * 50 + "\n")
 
-    lr = lr_override if lr_override else float(sft_plan.get("lr", 5e-5))
-    optimizer = create_adamw_optimizer(model, lr=lr, weight_decay=0.0)
-
     epochs = epochs_override if epochs_override else int(sft_plan.get("epochs", 3))
     batch_size = 4
     grad_accum = max(1, 128 // batch_size)
@@ -273,6 +310,10 @@ def run_sft(
     total_steps = max(1, steps_per_epoch * epochs)
     warmup_ratio = float(sft_plan.get("warmup", 0.03))
     warmup_steps = max(1, int(round(total_steps * warmup_ratio))) if total_steps > 1 else 0
+
+    lr = lr_override if lr_override else float(sft_plan.get("lr", 5e-5))
+    initial_sft_lr = get_sft_lr(1, total_steps, lr, warmup_steps, min_lr_ratio=0.1)
+    optimizer = create_adamw_optimizer(model, lr=initial_sft_lr, weight_decay=0.0)
 
     print("\n" + tr(
         f"=== MEMULAI SFT: {len(train_dataset):,} sampel latih, {len(val_dataset):,} sampel evaluasi ===",
@@ -317,6 +358,11 @@ def run_sft(
                     scaled_loss.backward()
 
             if (batch_idx + 1) % grad_accum == 0 or (batch_idx + 1) == len(train_loader):
+                target_step = step + 1
+                current_lr = get_sft_lr(target_step, total_steps, lr, warmup_steps, min_lr_ratio=0.1)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = current_lr
+
                 if scaler:
                     scaler.unscale_(optimizer)
                     nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -327,10 +373,6 @@ def run_sft(
                     optimizer.step()
                 optimizer.zero_grad()
                 step += 1
-
-                current_lr = get_sft_lr(step, total_steps, lr, warmup_steps, min_lr_ratio=0.1)
-                for pg in optimizer.param_groups:
-                    pg["lr"] = current_lr
 
                 step_loss = accum_loss / max(1, accum_tokens)
                 accum_loss = 0.0
@@ -393,14 +435,9 @@ def run_sft(
         "step": step,
         "epochs": epochs,
         "best_val_loss": round(best_val_loss, 4),
+        "skipped_overlong": total_skipped,
         "finished": True
     })
 
     log_history(project_dir, "sft", f"--epochs {epochs}", True, f"SFT selesai, best val loss: {best_val_loss:.4f}")
-    return {"status": "finished", "step": step, "best_val_loss": best_val_loss}
-
-
-def hashlib_id_val(s_id: str) -> int:
-    """Hash deterministik untuk memisahkan eval split SFT."""
-    import hashlib
-    return int(hashlib.md5(s_id.encode("utf-8")).hexdigest()[:8], 16)
+    return {"status": "finished", "step": step, "best_val_loss": best_val_loss, "skipped_overlong": total_skipped}

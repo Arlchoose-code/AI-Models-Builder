@@ -10,7 +10,7 @@ from typing import Any, Optional
 import torch
 from tokenizers import Tokenizer
 from transformers import Qwen3Config, Qwen3ForCausalLM
-from llmkit.chat_template import EOS_TOKEN, render_conversation
+from llmkit.chat_template import EOS_TOKEN, get_default_system, render_conversation
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint
 from llmkit.i18n import tr
 from llmkit.model import build_qwen3_config, create_model
@@ -81,9 +81,13 @@ def run_chat_repl(
         "Type your message. Special commands: /think, /nothink, /reset, /tools on|off, /system <text>, /exit"
     ))
 
+    answers = project_data.get("answers", {})
+    model_name = answers.get("model_name", "Bahasa")
+    creator = answers.get("creator", "Pengguna")
+
     current_mode = initial_mode
     tools_active = use_tools
-    custom_system: Optional[str] = None
+    custom_system: Optional[str] = get_default_system(model_name, creator)
     history_messages: list[dict[str, Any]] = []
 
     while True:

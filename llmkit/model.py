@@ -11,7 +11,7 @@ from transformers import Qwen3Config, Qwen3ForCausalLM
 def build_qwen3_config(
     arch_plan: dict[str, Any],
     max_position_embeddings: int = 4096,
-    rope_theta: float = 500000.0,
+    rope_theta: float = 1000000.0,
     attn_implementation: str = "sdpa"
 ) -> Qwen3Config:
     """Bangun objek Qwen3Config dari spesifikasi rencana toolkit."""

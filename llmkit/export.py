@@ -9,7 +9,14 @@ from typing import Any, Optional
 import torch
 from tokenizers import Tokenizer
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig, Qwen3Config, Qwen3ForCausalLM
-from llmkit.chat_template import EOS_TOKEN, PAD_TOKEN, PRETRAIN_EOS_TOKEN, SPECIAL_TOKENS, get_jinja_template
+from llmkit.chat_template import (
+    EOS_TOKEN,
+    PAD_TOKEN,
+    PRETRAIN_EOS_TOKEN,
+    SPECIAL_TOKENS,
+    get_default_system,
+    get_jinja_template,
+)
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint
 from llmkit.i18n import tr
 from llmkit.model import build_qwen3_config, create_model
@@ -95,7 +102,7 @@ def export_hf_model(
     if tok_src.exists():
         shutil.copy(tok_src, export_dir / "tokenizer.json")
 
-    jinja_template = get_jinja_template(f"Kamu adalah {model_name}, asisten AI dwibahasa buatan {creator}.")
+    jinja_template = get_jinja_template(get_default_system(model_name, creator))
     tokenizer_config = {
         "add_bos_token": False,
         "add_eos_token": False,

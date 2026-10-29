@@ -13,7 +13,7 @@ import torch
 import torch.nn as nn
 from tokenizers import Tokenizer
 from transformers import Qwen3Config, Qwen3ForCausalLM
-from llmkit.chat_template import render_conversation
+from llmkit.chat_template import get_default_system, render_conversation
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint, save_checkpoint
 from llmkit.dataset import SFTDataset, sft_collate_fn
 from llmkit.i18n import tr
@@ -23,6 +23,30 @@ from llmkit.model import (
     create_model,
 )
 from llmkit.state import atomic_write_json, compute_config_hash, load_project, log_history
+from llmkit.ui import print_info, print_ok, print_warn
+
+
+def get_sft_lr(
+    step: int,
+    total_steps: int,
+    peak_lr: float,
+    warmup_steps: int,
+    min_lr_ratio: float = 0.1
+) -> float:
+    """Learning rate schedule untuk SFT: linear warmup + cosine decay ke min_lr."""
+    min_lr = peak_lr * min_lr_ratio
+    if total_steps <= 0:
+        return peak_lr
+    if step <= warmup_steps:
+        if warmup_steps <= 0:
+            return peak_lr
+        return peak_lr * float(step) / float(warmup_steps)
+    decay_steps = total_steps - warmup_steps
+    if decay_steps <= 0:
+        return min_lr
+    progress = float(step - warmup_steps) / float(decay_steps)
+    progress = min(1.0, max(0.0, progress))
+    return min_lr + 0.5 * (peak_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
 def load_sft_samples(data_dir: Path) -> list[dict[str, Any]]:
@@ -41,7 +65,10 @@ def load_sft_samples(data_dir: Path) -> list[dict[str, Any]]:
                             line = line.strip()
                             if line:
                                 try:
-                                    samples.append(json.loads(line))
+                                    item = json.loads(line)
+                                    item.setdefault("category", cat_dir.name)
+                                    item["_category"] = cat_dir.name
+                                    samples.append(item)
                                 except Exception:
                                     pass
                 except Exception:
@@ -54,7 +81,8 @@ def run_sft(
     from_checkpoint: Optional[str] = None,
     epochs_override: Optional[int] = None,
     lr_override: Optional[float] = None,
-    seed: int = 1337
+    seed: int = 1337,
+    default_system: Optional[str] = None
 ) -> dict[str, Any]:
     """
     Eksekusi training Supervised Fine-Tuning (SFT) dengan loss mask pada giliran assistant.
@@ -64,6 +92,12 @@ def run_sft(
     arch = plan.get("architecture", {})
     sft_plan = plan.get("sft_data", {})
     settings = plan.get("settings", {})
+    answers = project_data.get("answers", {})
+
+    model_name = answers.get("model_name", "Bahasa")
+    creator = answers.get("creator", "Pengguna")
+    if default_system is None:
+        default_system = get_default_system(model_name, creator)
 
     tok_path = project_dir / "tokenizer" / "tokenizer.json"
     if not tok_path.exists():
@@ -77,9 +111,19 @@ def run_sft(
         raise ValueError("Data SFT tidak ditemukan di data/sft/. Siapkan data terlebih dahulu.")
 
     # Hold-out 1% untuk evaluasi (deterministik berdasarkan hash ID)
+    # Sampel identity selalu 100% masuk train_samples dan tidak dialihkan ke val
     train_samples = []
     val_samples = []
     for s in samples:
+        is_identity = (
+            s.get("category") == "identity"
+            or s.get("_category") == "identity"
+            or str(s.get("id", "")).startswith("ident")
+            or str(s.get("id", "")).startswith("id-")
+        )
+        if is_identity:
+            train_samples.append(s)
+            continue
         s_id = str(s.get("id", ""))
         h = int(hashlib_id_val(s_id))
         if h % 100 == 0 and len(val_samples) < 5000:
@@ -88,7 +132,17 @@ def run_sft(
             train_samples.append(s)
 
     if not val_samples:
-        val_samples = train_samples[:min(len(train_samples), 10)]
+        non_identity_train = [
+            s for s in train_samples
+            if not (
+                s.get("category") == "identity"
+                or s.get("_category") == "identity"
+                or str(s.get("id", "")).startswith("ident")
+                or str(s.get("id", "")).startswith("id-")
+            )
+        ]
+        val_source = non_identity_train if non_identity_train else train_samples
+        val_samples = val_source[:min(len(val_source), 10)]
 
     vram_gb = 24.0
     if torch.cuda.is_available():
@@ -97,8 +151,15 @@ def run_sft(
     context_final = int(settings.get("context_final", {}).get("value", 4096))
     max_seq_len = min(context_final, 4096) if vram_gb < 24.0 else context_final
 
-    train_dataset = SFTDataset(train_samples, tokenizer, max_seq_len=max_seq_len)
-    val_dataset = SFTDataset(val_samples, tokenizer, max_seq_len=max_seq_len)
+    train_dataset = SFTDataset(train_samples, tokenizer, max_seq_len=max_seq_len, default_system=default_system)
+    val_dataset = SFTDataset(val_samples, tokenizer, max_seq_len=max_seq_len, default_system=default_system)
+
+    total_skipped = train_dataset.skipped_overlong + val_dataset.skipped_overlong
+    if total_skipped > 0:
+        print_info(tr(
+            f"Sampel melebihi max_seq_len ({max_seq_len}) dilewati: {total_skipped} sampel (train: {train_dataset.skipped_overlong}, val: {val_dataset.skipped_overlong})",
+            f"Samples exceeding max_seq_len ({max_seq_len}) skipped: {total_skipped} samples (train: {train_dataset.skipped_overlong}, val: {val_dataset.skipped_overlong})"
+        ))
 
     # Setup Run SFT
     runs_dir = project_dir / "runs"
@@ -113,6 +174,7 @@ def run_sft(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     use_bf16 = torch.cuda.is_available() and torch.cuda.is_bf16_supported()
     cast_dtype = torch.bfloat16 if use_bf16 else torch.float16
+    scaler = torch.amp.GradScaler("cuda") if (device == "cuda" and not use_bf16) else None
 
     # Inisialisasi Model
     cfg = build_qwen3_config(arch, max_position_embeddings=max_seq_len)
@@ -173,7 +235,7 @@ def run_sft(
     print("\n" + "=" * 50)
     print(tr("PREVIEW FORMAT SFT (3 Sampel Render & Loss Masking):", "SFT FORMAT PREVIEW (3 Rendered Samples & Loss Masking):"))
     for s_idx, samp in enumerate(train_samples[:3], start=1):
-        rendered_text, spans = render_conversation(samp)
+        rendered_text, spans = render_conversation(samp, default_system=default_system)
         print(f"\n--- {tr('Sampel', 'Sample')} #{s_idx} ({samp.get('id', '-')}, mode: {samp.get('mode', '-')}, lang: {samp.get('lang', '-')}) ---")
         curr_pos = 0
         input_tag = tr("[INPUT/TIDAK DILATIH]", "[INPUT/UNMASKED]")
@@ -199,16 +261,6 @@ def run_sft(
     run_file = curr_run_dir / "run.json"
     metrics_file = curr_run_dir / "metrics.jsonl"
 
-    print("\n" + tr(
-        f"=== MEMULAI SFT: {len(train_dataset):,} sampel latih, {len(val_dataset):,} sampel evaluasi ===",
-        f"=== STARTING SFT: {len(train_dataset):,} train samples, {len(val_dataset):,} validation samples ==="
-    ))
-    print(f"Epochs: {epochs}, Max Seq Len: {max_seq_len}, LR: {lr:.2e}")
-
-    step = 0
-    best_val_loss = float("inf")
-    model.train()
-
     from torch.utils.data import DataLoader
     train_loader = DataLoader(
         train_dataset,
@@ -216,6 +268,21 @@ def run_sft(
         shuffle=True,
         collate_fn=sft_collate_fn
     )
+
+    steps_per_epoch = math.ceil(len(train_loader) / grad_accum) if len(train_loader) > 0 else 1
+    total_steps = max(1, steps_per_epoch * epochs)
+    warmup_ratio = float(sft_plan.get("warmup", 0.03))
+    warmup_steps = max(1, int(round(total_steps * warmup_ratio))) if total_steps > 1 else 0
+
+    print("\n" + tr(
+        f"=== MEMULAI SFT: {len(train_dataset):,} sampel latih, {len(val_dataset):,} sampel evaluasi ===",
+        f"=== STARTING SFT: {len(train_dataset):,} train samples, {len(val_dataset):,} validation samples ==="
+    ))
+    print(f"Epochs: {epochs}, Max Seq Len: {max_seq_len}, Peak LR: {lr:.2e}, Warmup Steps: {warmup_steps}/{total_steps}")
+
+    step = 0
+    best_val_loss = float("inf")
+    model.train()
 
     for epoch in range(1, epochs + 1):
         accum_loss = 0.0
@@ -241,15 +308,29 @@ def run_sft(
             valid_tokens = (shift_labels != -100).sum().item()
             if valid_tokens > 0:
                 normalized_loss = loss / max(1, valid_tokens)
-                (normalized_loss / grad_accum).backward()
                 accum_loss += loss.item()
                 accum_tokens += valid_tokens
+                scaled_loss = normalized_loss / grad_accum
+                if scaler:
+                    scaler.scale(scaled_loss).backward()
+                else:
+                    scaled_loss.backward()
 
             if (batch_idx + 1) % grad_accum == 0 or (batch_idx + 1) == len(train_loader):
-                nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                optimizer.step()
+                if scaler:
+                    scaler.unscale_(optimizer)
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    optimizer.step()
                 optimizer.zero_grad()
                 step += 1
+
+                current_lr = get_sft_lr(step, total_steps, lr, warmup_steps, min_lr_ratio=0.1)
+                for pg in optimizer.param_groups:
+                    pg["lr"] = current_lr
 
                 step_loss = accum_loss / max(1, accum_tokens)
                 accum_loss = 0.0
@@ -258,7 +339,7 @@ def run_sft(
                 if step % 5 == 0 or step == 1:
                     metric = {
                         "epoch": epoch, "step": step, "loss": round(step_loss, 4),
-                        "lr": lr, "time": datetime.datetime.now().isoformat()
+                        "lr": current_lr, "time": datetime.datetime.now().isoformat()
                     }
                     with open(metrics_file, "a", encoding="utf-8") as mf:
                         mf.write(json.dumps(metric) + "\n")
@@ -272,10 +353,17 @@ def run_sft(
             for v_in, _, v_lbl in val_loader:
                 v_in = v_in.to(device)
                 v_lbl = v_lbl.to(device)
-                out = model(v_in)
-                s_log = out.logits[..., :-1, :].contiguous()
-                s_lbl = v_lbl[..., 1:].contiguous()
-                v_loss = loss_fn(s_log.view(-1, cfg.vocab_size), s_lbl.view(-1))
+                if device == "cuda":
+                    with torch.amp.autocast(device_type="cuda", dtype=cast_dtype):
+                        out = model(v_in)
+                        s_log = out.logits[..., :-1, :].contiguous()
+                        s_lbl = v_lbl[..., 1:].contiguous()
+                        v_loss = loss_fn(s_log.view(-1, cfg.vocab_size), s_lbl.view(-1))
+                else:
+                    out = model(v_in)
+                    s_log = out.logits[..., :-1, :].contiguous()
+                    s_lbl = v_lbl[..., 1:].contiguous()
+                    v_loss = loss_fn(s_log.view(-1, cfg.vocab_size), s_lbl.view(-1))
                 v_toks = (s_lbl != -100).sum().item()
                 val_loss_sum += v_loss.item()
                 val_tokens_sum += v_toks
@@ -289,7 +377,7 @@ def run_sft(
 
         # Checkpoint per epoch
         t_state = {"epoch": epoch, "step": step, "val_loss": avg_val_loss}
-        save_checkpoint(ckpt_dir, step, model, optimizer, t_state, {}, is_best=is_best)
+        save_checkpoint(ckpt_dir, step, model, optimizer, t_state, {}, scaler=scaler, is_best=is_best)
         model.train()
 
     # Finalize SFT

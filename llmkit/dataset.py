@@ -217,26 +217,30 @@ class SFTDataset(Dataset):
         samples: list[dict[str, Any]],
         tokenizer: Tokenizer,
         max_seq_len: int = 4096,
-        pad_token_id: int = 11
+        pad_token_id: int = 11,
+        default_system: Optional[str] = None
     ) -> None:
         self.samples = samples
         self.tokenizer = tokenizer
         self.max_seq_len = max_seq_len
         self.pad_token_id = pad_token_id
+        self.default_system = default_system
         self.encoded_data: list[tuple[list[int], list[int]]] = []
+        self.skipped_overlong: int = 0
 
         self._preprocess()
 
     def _preprocess(self) -> None:
         """Tokenisasi sampel dan terapkan masking label -100 pada token non-assistant."""
         for s in self.samples:
-            rendered_text, spans = render_conversation(s)
+            rendered_text, spans = render_conversation(s, default_system=self.default_system)
             enc = self.tokenizer.encode(rendered_text)
             tokens = enc.ids
             offsets = enc.offsets
 
             if len(tokens) > self.max_seq_len:
                 # Discard sampel yang melebihi max_seq_len (Bagian 12.3)
+                self.skipped_overlong += 1
                 continue
 
             labels = [-100] * len(tokens)

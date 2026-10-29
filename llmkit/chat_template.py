@@ -89,6 +89,14 @@ def render_conversation(
         if m.get("role") == "user":
             last_user_idx = idx
 
+    # Periksa apakah prompt terakhir mengandung tag trigger eksplisit
+    if last_user_idx != -1:
+        last_u_content = messages[last_user_idx].get("content", "")
+        if last_u_content.strip().endswith("/think"):
+            mode = "think"
+        elif last_u_content.strip().endswith("/no_think"):
+            mode = "no_think"
+
     # Kelompokkan giliran secara sekuensial
     # Peran tool yang berurutan digabung ke dalam satu giliran user dengan <tool_response>
     i = 0
@@ -103,13 +111,16 @@ def render_conversation(
             content = m.get("content", "")
             # Tempelkan tag mode jika ini user terakhir dari manusia
             if i == last_user_idx and allow_think_tags:
-                if mode == "think":
-                    content = f"{content} /think"
-                elif mode == "no_think":
-                    # 50% diberi /no_think (deterministik berdasarkan hash ID)
-                    h_val = int(hashlib.md5(sample_id.encode("utf-8")).hexdigest(), 16)
-                    if h_val % 2 == 0:
-                        content = f"{content} /no_think"
+                has_think_tag = content.strip().endswith("/think")
+                has_nothink_tag = content.strip().endswith("/no_think")
+                if not (has_think_tag or has_nothink_tag):
+                    if mode == "think":
+                        content = f"{content} /think"
+                    elif mode == "no_think" and not add_generation_prompt:
+                        # 50% diberi /no_think (deterministik berdasarkan hash ID)
+                        h_val = int(hashlib.md5(sample_id.encode("utf-8")).hexdigest(), 16)
+                        if h_val % 2 == 0:
+                            content = f"{content} /no_think"
             rendered += f"<|im_start|>user\n{content}<|im_end|>\n"
             i += 1
 
@@ -178,11 +189,14 @@ def render_conversation(
     return rendered, spans
 
 
-def get_jinja_template(default_system_text: str = "Kamu adalah Bahasa, asisten AI dwibahasa (Indonesia dan Inggris) buatan Pengguna.") -> str:
+def get_jinja_template(default_system_text: Optional[str] = None) -> str:
     """
     Mengembalikan string Jinja template yang kompatibel dengan tokenizer transformers
     dan menghasilkan teks yang 100% identik dengan render_conversation (Bagian 8.4).
     """
+    if default_system_text is None:
+        default_system_text = get_default_system()
+
     template = (
         "{%- if messages[0]['role'] == 'system' %}"
         "{{ '<|im_start|>system\\n' + messages[0]['content'] }}"
@@ -197,15 +211,25 @@ def get_jinja_template(default_system_text: str = "Kamu adalah Bahasa, asisten A
         "{{ '</tools>\\n\\nFor each function call, return a json object with function name and arguments within <tool_call></tool_call> XML tags:\\n<tool_call>\\n{\"name\": <function-name>, \"arguments\": <args-json-object>}\\n</tool_call>' }}"
         "{%- endif %}"
         "{{ '<|im_end|>\\n' }}"
-        "{%- set last_user_idx = -1 %}"
+        "{%- set ns = namespace(last_user_idx=-1) %}"
         "{%- for m in messages %}"
         "{%- if m.role == 'user' %}"
-        "{%- set last_user_idx = loop.index0 %}"
+        "{%- set ns.last_user_idx = loop.index0 %}"
         "{%- endif %}"
         "{%- endfor %}"
         "{%- for m in messages %}"
         "{%- if m.role == 'user' %}"
-        "{{ '<|im_start|>user\\n' + m.content + '<|im_end|>\\n' }}"
+        "{%- set u_content = m.content %}"
+        "{%- if loop.index0 == ns.last_user_idx %}"
+        "{%- set has_think = u_content.endswith(' /think') or u_content.endswith('\\n/think') or u_content.endswith('/think') %}"
+        "{%- set has_nothink = u_content.endswith(' /no_think') or u_content.endswith('\\n/no_think') or u_content.endswith('/no_think') %}"
+        "{%- if not (has_think or has_nothink) %}"
+        "{%- if (mode is defined and mode == 'think') or (enable_thinking is defined and enable_thinking) or (think is defined and think) %}"
+        "{%- set u_content = u_content + ' /think' %}"
+        "{%- endif %}"
+        "{%- endif %}"
+        "{%- endif %}"
+        "{{ '<|im_start|>user\\n' + u_content + '<|im_end|>\\n' }}"
         "{%- elif m.role == 'tool' %}"
         "{%- if loop.first or messages[loop.index0 - 1]['role'] != 'tool' %}"
         "{{ '<|im_start|>user\\n' }}"
@@ -218,7 +242,7 @@ def get_jinja_template(default_system_text: str = "Kamu adalah Bahasa, asisten A
         "{%- endif %}"
         "{%- elif m.role == 'assistant' %}"
         "{{ '<|im_start|>assistant\\n<think>\\n' }}"
-        "{%- if m.reasoning is defined and m.reasoning %}"
+        "{%- if loop.index0 > ns.last_user_idx and m.reasoning is defined and m.reasoning and not (mode is defined and mode == 'no_think') %}"
         "{{ m.reasoning + '\\n' }}"
         "{%- else %}"
         "{{ '\\n' }}"
@@ -241,6 +265,9 @@ def get_jinja_template(default_system_text: str = "Kamu adalah Bahasa, asisten A
         "{%- endfor %}"
         "{%- if add_generation_prompt %}"
         "{{ '<|im_start|>assistant\\n' }}"
+        "{%- if force_nothink is defined and force_nothink %}"
+        "{{ '<think>\\n\\n</think>\\n\\n' }}"
+        "{%- endif %}"
         "{%- endif %}"
     )
     return template

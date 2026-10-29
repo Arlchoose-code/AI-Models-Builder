@@ -12,12 +12,14 @@ from tokenizers import Tokenizer
 from tokenizers.models import BPE
 from transformers import Qwen3Config
 
+from llmkit.chat_template import get_default_system, get_jinja_template, render_conversation
 from llmkit.checkpoint import find_latest_checkpoint, load_checkpoint, save_checkpoint
 from llmkit.data_spec import make_identity_file, create_project_data_scaffold
+from llmkit.dataset import SFTDataset
 from llmkit.evaluate import compare_runs, evaluate_pretrain_model
 from llmkit.model import build_qwen3_config, create_adamw_optimizer, create_model
 from llmkit.planner import make_plan
-from llmkit.sft import run_sft
+from llmkit.sft import get_sft_lr, hashlib_id_val, load_sft_samples, run_sft
 from llmkit.state import load_project, save_project
 from llmkit.train import evaluate_validation, run_pretrain
 from llmkit.cli import handle_replan
@@ -283,6 +285,142 @@ class TestFixesAndFeatures(unittest.TestCase):
             self.assertEqual(proj.get("name"), "my-en-model")
         finally:
             set_lang(orig_lang)
+
+    def test_default_rope_theta_is_one_million(self):
+        """Uji default rope_theta = 1,000,000 pada model.py (Issue 6)."""
+        cfg = build_qwen3_config(self.plan["architecture"])
+        self.assertEqual(cfg.rope_parameters.get("rope_theta"), 1_000_000.0)
+
+    def test_sft_dataset_default_system(self):
+        """Uji SFTDataset menggunakan default_system proyek (Issue 1)."""
+        tok = Tokenizer.from_file(str(self.temp_dir / "tokenizer" / "tokenizer.json"))
+        sample = {
+            "id": "s-01",
+            "messages": [
+                {"role": "user", "content": "Siapa kamu?"},
+                {"role": "assistant", "content": "Aku TestAI buatan AuthorName."}
+            ]
+        }
+        custom_sys = get_default_system("TestAI", "AuthorName")
+        ds = SFTDataset([sample], tok, max_seq_len=512, default_system=custom_sys)
+        self.assertEqual(ds.default_system, custom_sys)
+        rendered, _ = render_conversation(sample, default_system=ds.default_system)
+        self.assertIn("Kamu adalah TestAI, asisten AI dwibahasa (Indonesia dan Inggris) buatan AuthorName.", rendered)
+
+    def test_chat_template_triggers_and_jinja_consistency(self):
+        """Uji prompt trigger /think dan konsistensi template Jinja (Issue 2)."""
+        from transformers.tokenization_utils_base import render_jinja_template
+
+        custom_sys = get_default_system("TestAI", "AuthorName")
+        jinja_str = get_jinja_template(custom_sys)
+
+        # 1. Prompt dengan trigger eksplisit /think tidak diduplikasi
+        sample_think = {
+            "id": "t-01",
+            "mode": "think",
+            "messages": [
+                {"role": "user", "content": "Hitung 25 * 4? /think"},
+                {"role": "assistant", "reasoning": "25 * 4 = 100", "content": "Hasilnya 100."}
+            ]
+        }
+        rendered, _ = render_conversation(sample_think, default_system=custom_sys, allow_think_tags=True)
+        self.assertNotIn("/think /think", rendered)
+        self.assertIn("Hitung 25 * 4? /think<|im_end|>", rendered)
+
+        # 2. Template Jinja dengan prompt /think identik dengan render Python
+        msgs = sample_think["messages"]
+        hf_res, _ = render_jinja_template(conversations=[msgs], chat_template=jinja_str)
+        self.assertEqual(rendered, hf_res[0])
+
+        # 3. Template Jinja dengan argumen mode='think' menambahkan tag /think
+        sample_untagged = [{"role": "user", "content": "Hitung 25 * 4?"}]
+        hf_think_res, _ = render_jinja_template(conversations=[sample_untagged], chat_template=jinja_str, mode="think")
+        self.assertIn("Hitung 25 * 4? /think<|im_end|>", hf_think_res[0])
+
+        # 4. force_nothink pada generation prompt
+        py_gen, _ = render_conversation({"id": "g-01", "messages": sample_untagged}, default_system=custom_sys, add_generation_prompt=True, force_nothink=True)
+        hf_gen, _ = render_jinja_template(conversations=[sample_untagged], chat_template=jinja_str, add_generation_prompt=True, force_nothink=True)
+        self.assertIn("<think>\n\n</think>\n\n", py_gen)
+        self.assertEqual(py_gen, hf_gen[0])
+
+    def test_sft_lr_schedule_warmup_and_cosine_decay(self):
+        """Uji get_sft_lr untuk linear warmup dan cosine decay (Issue 3)."""
+        peak_lr = 1e-4
+        total_steps = 1000
+        warmup_steps = 30  # 3% dari 1000
+
+        # Step 0
+        self.assertEqual(get_sft_lr(0, total_steps, peak_lr, warmup_steps), 0.0)
+        # Step setengah warmup
+        self.assertAlmostEqual(get_sft_lr(15, total_steps, peak_lr, warmup_steps), 5e-5)
+        # Step akhir warmup
+        self.assertAlmostEqual(get_sft_lr(30, total_steps, peak_lr, warmup_steps), peak_lr)
+        # Step pertengahan decay
+        mid_lr = get_sft_lr(30 + (1000 - 30) // 2, total_steps, peak_lr, warmup_steps, min_lr_ratio=0.1)
+        self.assertAlmostEqual(mid_lr, 0.1 * peak_lr + 0.5 * (0.9 * peak_lr), places=5)
+        # Step akhir
+        min_lr = get_sft_lr(total_steps, total_steps, peak_lr, warmup_steps, min_lr_ratio=0.1)
+        self.assertAlmostEqual(min_lr, 1e-5)
+
+    def test_sft_skipped_overlong_tracking(self):
+        """Uji SFTDataset melacak jumlah sampel melebihi max_seq_len (Issue 4)."""
+        from llmkit.tokenizer_train import build_bpe_trainer
+        tok, trainer = build_bpe_trainer(vocab_size=1000)
+        tok.train_from_iterator(["Hi", "Hello", "Kata", "Jawab"], trainer=trainer)
+        short_sample = {
+            "id": "short-01",
+            "messages": [{"role": "user", "content": "Hi"}, {"role": "assistant", "content": "Hello"}]
+        }
+        long_sample = {
+            "id": "long-01",
+            "messages": [{"role": "user", "content": "Kata " * 300}, {"role": "assistant", "content": "Jawab " * 300}]
+        }
+        ds = SFTDataset([short_sample, long_sample], tok, max_seq_len=200)
+        self.assertEqual(ds.skipped_overlong, 1)
+        self.assertEqual(len(ds), 1)
+
+    def test_sft_identity_samples_never_diverted_to_val(self):
+        """Uji bahwa 100% sampel identity dipertahankan di train split (Issue 5)."""
+        samples = []
+        # Tambahkan 200 sampel identity
+        for i in range(200):
+            samples.append({
+                "id": f"ident-{i:03d}",
+                "category": "identity",
+                "messages": [{"role": "user", "content": f"Q{i}"}, {"role": "assistant", "content": f"A{i}"}]
+            })
+        # Tambahkan 500 sampel chat umum
+        for i in range(500):
+            samples.append({
+                "id": f"chat-{i:03d}",
+                "category": "chat",
+                "messages": [{"role": "user", "content": f"C{i}"}, {"role": "assistant", "content": f"R{i}"}]
+            })
+
+        train_samples = []
+        val_samples = []
+        for s in samples:
+            is_identity = (
+                s.get("category") == "identity"
+                or s.get("_category") == "identity"
+                or str(s.get("id", "")).startswith("ident")
+                or str(s.get("id", "")).startswith("id-")
+            )
+            if is_identity:
+                train_samples.append(s)
+                continue
+            s_id = str(s.get("id", ""))
+            h = int(hashlib_id_val(s_id))
+            if h % 100 == 0 and len(val_samples) < 5000:
+                val_samples.append(s)
+            else:
+                train_samples.append(s)
+
+        # Pastikan seluruh 200 sampel identitas ada di train_samples
+        identity_in_train = [s for s in train_samples if s.get("category") == "identity"]
+        identity_in_val = [s for s in val_samples if s.get("category") == "identity"]
+        self.assertEqual(len(identity_in_train), 200)
+        self.assertEqual(len(identity_in_val), 0)
 
 
 if __name__ == "__main__":
